@@ -86,6 +86,16 @@ def proximo_io(p):
     return None
 
 
+def colocar_na_fila(p, prioridade, alta, baixa):
+    # o processo fica PRONTO e entra no fim da fila ALTA ou BAIXA
+    p["status"] = "PRONTO"
+    p["prioridade"] = prioridade
+    if prioridade == "ALTA":
+        alta.append(p)
+    else:
+        baixa.append(p)
+
+
 def texto_ios(p):
     if len(p["ios"]) == 0:
         return "nenhum"
@@ -233,36 +243,22 @@ def estado_filas(alta, baixa, fila_io, atendendo, executando):
 
 
 def imprimir_gantt(linha_tempo):
-    # junta as unidades seguidas do mesmo processo em blocos [inicio, fim, nome]
-    blocos = []
-    for t in range(len(linha_tempo)):
-        if linha_tempo[t] is None:
-            nome = "--"
-        else:
-            nome = "P" + str(linha_tempo[t])
-        if len(blocos) > 0 and blocos[-1][2] == nome:
-            blocos[-1][1] = t + 1
-        else:
-            blocos.append([t, t + 1, nome])
+    # junta as unidades seguidas do mesmo processo em intervalos, ex: "0-2 P1"
+    intervalos = []
+    inicio = 0
+    for t in range(1, len(linha_tempo) + 1):
+        if t == len(linha_tempo) or linha_tempo[t] != linha_tempo[inicio]:
+            if linha_tempo[inicio] is None:
+                nome = "--"
+            else:
+                nome = "P" + str(linha_tempo[inicio])
+            intervalos.append(f"{inicio}-{t} {nome}")
+            inicio = t
 
     escrever("Linha do tempo da CPU (Gantt)  -- = CPU ociosa")
-    linha_cima = "|"
-    linha_baixo = ""
-    for inicio, fim, nome in blocos:
-        largura = max(len(nome) + 2, len(str(inicio)) + 1, fim - inicio)
-        pedaco_cima = nome.center(largura) + "|"
-        pedaco_baixo = str(inicio).ljust(largura + 1)
-        # se a linha ficar muito comprida, imprime e comeca outra
-        if len(linha_cima) + len(pedaco_cima) > 76:
-            escrever(linha_cima)
-            escrever(linha_baixo + str(inicio))
-            escrever()
-            linha_cima = "|"
-            linha_baixo = ""
-        linha_cima += pedaco_cima
-        linha_baixo += pedaco_baixo
-    escrever(linha_cima)
-    escrever(linha_baixo + str(len(linha_tempo)))
+    # 7 intervalos por linha para nao ficar muito comprido
+    for i in range(0, len(intervalos), 7):
+        escrever("  " + " | ".join(intervalos[i:i + 7]))
     escrever()
 
 
@@ -296,9 +292,7 @@ def simular(processos, quantum, mostrar_filas):
         # 1) processos que chegam agora vao para a fila ALTA
         while len(novos) > 0 and novos[0]["chegada"] <= t:
             p = novos.pop(0)
-            p["status"] = "PRONTO"
-            p["prioridade"] = "ALTA"
-            alta.append(p)
+            colocar_na_fila(p, "ALTA", alta, baixa)
             log(t, f"P{p['pid']} criado (PPID={p['ppid']}, CPU={p['tempo_cpu']}, "
                    f"I/O: {texto_ios(p)}) -> fila ALTA")
             teve_evento = True
@@ -309,12 +303,7 @@ def simular(processos, quantum, mostrar_filas):
             if p is not None and tempo_io[d] == 0:
                 atendendo[d] = None
                 destino = VOLTA_PARA[d]
-                p["status"] = "PRONTO"
-                p["prioridade"] = destino
-                if destino == "ALTA":
-                    alta.append(p)
-                else:
-                    baixa.append(p)
+                colocar_na_fila(p, destino, alta, baixa)
                 log(t, f"P{p['pid']} retornou {ARTIGO[d]} {d} -> fila {destino}")
                 teve_evento = True
 
@@ -342,11 +331,9 @@ def simular(processos, quantum, mostrar_filas):
                 teve_evento = True
             elif quantum_usado == quantum:
                 # acabou o quantum: preempcao, vai para a fila BAIXA
-                p["status"] = "PRONTO"
-                p["prioridade"] = "BAIXA"
                 p["preempcoes"] += 1
                 preempcoes += 1
-                baixa.append(p)
+                colocar_na_fila(p, "BAIXA", alta, baixa)
                 executando = None
                 log(t, f"P{p['pid']} sofreu preempção (fim do quantum, faltam {p['restante']}) -> fila BAIXA")
                 teve_evento = True
