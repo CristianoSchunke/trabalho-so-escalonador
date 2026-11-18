@@ -6,6 +6,7 @@ alta e baixa prioridade e tratamento de I/O (disco, fita magnética e impressora
 ## Grupo
 - Jean Lucas Bremm Machado
 - Matheus Reinehr Stoffel
+- Cristiano Antonio Santos Schunke
 
 ## Linguagem utilizada
 Python 3 (testado com Python 3.12). Usa apenas a biblioteca padrão, sem dependências externas.
