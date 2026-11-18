@@ -1,358 +1,410 @@
-#!/usr/bin/env python3
-"""
-Trabalho Final de Sistemas Operacionais
-Simulador de Escalonamento Round Robin com Feedback
+# Trabalho Final de Sistemas Operacionais
+# Simulador de escalonamento Round Robin com Feedback
+#
+# Como rodar:
+#   python src/escalonador.py
+#   python src/escalonador.py --seed 7 --processos 8 --quantum 4
+#   python src/escalonador.py --entrada input/exemplo.txt
+#   python src/escalonador.py --saida output/resultado.txt
+#   python src/escalonador.py --sem-filas
 
-Estrutura (sem orientacao a objetos):
-  - Cada processo (PCB) e um dicionario simples.
-  - As filas sao deques (collections.deque), estrutura FIFO.
-  - A simulacao avanca em unidades de tempo (t = 0, 1, 2, ...).
-
-Uso:
-  python src/escalonador.py                         # 6 processos aleatorios, seed 42
-  python src/escalonador.py --seed 7 --processos 8  # outra semente / quantidade
-  python src/escalonador.py --entrada input/exemplo.txt
-  python src/escalonador.py --quantum 4 --saida output/resultado.txt
-"""
-
-import argparse
 import random
 import sys
-from collections import deque
 
-# ---------------------------------------------------------------------------
-# PREMISSAS (valores padrao, podem ser alterados por linha de comando)
-# ---------------------------------------------------------------------------
-QUANTUM_PADRAO = 3          # fatia de tempo, em unidades de tempo (u.t.)
-NUM_PROCESSOS_PADRAO = 6    # quantidade de processos gerados aleatoriamente
-MAX_PROCESSOS = 20          # limite maximo de processos
-SEED_PADRAO = 42            # semente aleatoria padrao (reprodutibilidade)
-CPU_MIN, CPU_MAX = 4, 12    # faixa do tempo de servico de CPU
-CHEGADA_MAX = 10            # processos chegam entre t=0 e t=CHEGADA_MAX
-MAX_IO_POR_PROCESSO = 2     # cada processo faz de 0 a 2 operacoes de I/O
-LIMITE_TEMPO = 100000       # protecao contra laco infinito
+# ---------- Premissas ----------
+QUANTUM = 3          # quantum padrao (unidades de tempo)
+NUM_PROCESSOS = 6    # quantidade padrao de processos aleatorios
+MAX_PROCESSOS = 20
+SEED = 42            # semente padrao
+CPU_MIN = 4          # tempo de CPU de cada processo: de 4 a 12
+CPU_MAX = 12
+CHEGADA_MAX = 10     # processos chegam entre t=0 e t=10
+MAX_IO = 2           # cada processo faz de 0 a 2 I/Os
 
-# Dispositivos de I/O: duracao fixa e fila de retorno
 DISPOSITIVOS = ["DISCO", "FITA", "IMPRESSORA"]
 DURACAO_IO = {"DISCO": 3, "FITA": 5, "IMPRESSORA": 8}
-RETORNO_IO = {"DISCO": "BAIXA", "FITA": "ALTA", "IMPRESSORA": "ALTA"}
-ARTIGO = {"DISCO": "do", "FITA": "da", "IMPRESSORA": "da"}  # para as mensagens
+VOLTA_PARA = {"DISCO": "BAIXA", "FITA": "ALTA", "IMPRESSORA": "ALTA"}
+ARTIGO = {"DISCO": "do", "FITA": "da", "IMPRESSORA": "da"}  # so para as mensagens
 
-# Estados possiveis de um processo
-NOVO = "NOVO"
-PRONTO = "PRONTO"
-EXECUTANDO = "EXECUTANDO"
-BLOQUEADO = "BLOQUEADO"
-FINALIZADO = "FINALIZADO"
+AJUDA = """Uso: python src/escalonador.py [opcoes]
 
-# Saida: tudo que e impresso tambem fica guardado para salvar em arquivo
-_linhas_saida = []
+Opções:
+  --quantum N      fatia de tempo (padrão: 3)
+  --processos N    quantidade de processos aleatórios (padrão: 6, máx: 20)
+  --seed N         semente aleatória (padrão: 42)
+  --entrada ARQ    lê os processos de um arquivo (ex.: input/exemplo.txt)
+  --saida ARQ      salva a saída também em arquivo (ex.: output/resultado.txt)
+  --sem-filas      não imprime o estado das filas a cada evento
+  --help           mostra esta ajuda"""
+
+# tudo que e impresso fica guardado aqui, para salvar com --saida
+linhas_saida = []
 
 
 def escrever(texto=""):
     print(texto)
-    _linhas_saida.append(texto)
+    linhas_saida.append(texto)
 
 
-def log(t, mensagem):
-    escrever(f"[t={t:03d}] {mensagem}")
+def log(t, texto):
+    escrever(f"[t={t:03d}] {texto}")
 
 
-# ---------------------------------------------------------------------------
-# PCB (Process Control Block)
-# ---------------------------------------------------------------------------
-def criar_pcb(pid, ppid, chegada, tempo_cpu, ios):
-    """Cria o PCB de um processo como um dicionario.
+def erro(mensagem):
+    print("Erro:", mensagem)
+    sys.exit(1)
 
-    ios: lista de tuplas (instante, dispositivo). 'instante' e a quantidade
-    de unidades de CPU ja executadas no momento em que o processo pede o I/O.
-    Ex.: (2, "DISCO") = depois de usar 2 u.t. de CPU, o processo pede disco.
-    """
+
+# ---------- PCB ----------
+
+def criar_processo(pid, ppid, chegada, tempo_cpu, ios):
+    # ios e uma lista de (instante, dispositivo).
+    # instante = quanto de CPU o processo ja usou quando pede o I/O.
+    # Ex: (2, "DISCO") -> depois de usar 2 u.t. de CPU ele pede o disco.
     return {
         "pid": pid,
         "ppid": ppid,
-        "status": NOVO,
-        "prioridade": "ALTA",       # fila em que o processo entra/esta
+        "status": "NOVO",
+        "prioridade": "ALTA",
         "chegada": chegada,
-        "tempo_cpu": tempo_cpu,     # tempo total de servico de CPU
-        "restante": tempo_cpu,      # quanto ainda falta de CPU
-        "executado": 0,             # quanto ja usou de CPU
+        "tempo_cpu": tempo_cpu,
+        "restante": tempo_cpu,   # quanto falta de CPU
+        "executado": 0,          # quanto ja usou de CPU
         "ios": sorted(ios),
-        "prox_io": 0,               # indice do proximo I/O na lista 'ios'
-        # informacoes de controle / estatisticas
-        "inicio": None,             # primeira vez que ganhou a CPU
+        "prox_io": 0,            # posicao do proximo I/O na lista
+        "inicio": None,          # primeira vez que pegou a CPU
         "fim": None,
-        "espera": 0,                # tempo total em fila de prontos
+        "espera": 0,             # tempo parado nas filas ALTA/BAIXA
         "preempcoes": 0,
     }
 
 
 def proximo_io(p):
-    """Retorna (instante, dispositivo) do proximo I/O ou None."""
+    # devolve (instante, dispositivo) do proximo I/O, ou None se nao tem mais
     if p["prox_io"] < len(p["ios"]):
         return p["ios"][p["prox_io"]]
     return None
 
 
-def descrever_ios(p):
-    if not p["ios"]:
+def texto_ios(p):
+    if len(p["ios"]) == 0:
         return "nenhum"
-    return ", ".join(f"{d}@{i}" for i, d in p["ios"])
+    partes = []
+    for instante, disp in p["ios"]:
+        partes.append(f"{disp}@{instante}")
+    return ", ".join(partes)
 
 
-# ---------------------------------------------------------------------------
-# CRIACAO DOS PROCESSOS
-# ---------------------------------------------------------------------------
-def gerar_processos(n, rng):
-    """Gera n processos aleatorios (reprodutiveis pela semente)."""
-    chegadas = sorted(rng.randint(0, CHEGADA_MAX) for _ in range(n))
-    chegadas[0] = 0  # sempre ha um processo no instante 0
+# ---------- Criacao dos processos ----------
+
+def gerar_processos(n):
+    chegadas = []
+    for i in range(n):
+        chegadas.append(random.randint(0, CHEGADA_MAX))
+    chegadas.sort()
+    chegadas[0] = 0  # sempre tem um processo em t=0
 
     processos = []
     for i in range(n):
         pid = i + 1
-        # PPID: o primeiro e filho do "sistema" (0); os demais podem ser
-        # filhos de um processo criado antes ou do sistema.
-        if pid == 1 or rng.random() < 0.4:
+        # o P1 e filho do sistema (0); os outros podem ser filhos do sistema
+        # ou de algum processo criado antes
+        if pid == 1 or random.random() < 0.4:
             ppid = 0
         else:
-            ppid = rng.randint(1, pid - 1)
+            ppid = random.randint(1, pid - 1)
 
-        tempo_cpu = rng.randint(CPU_MIN, CPU_MAX)
-        qtd_io = rng.randint(0, MAX_IO_POR_PROCESSO)
-        instantes = sorted(rng.sample(range(1, tempo_cpu), qtd_io))
-        ios = [(inst, rng.choice(DISPOSITIVOS)) for inst in instantes]
+        tempo_cpu = random.randint(CPU_MIN, CPU_MAX)
+        qtd_io = random.randint(0, MAX_IO)
+        instantes = random.sample(range(1, tempo_cpu), qtd_io)
+        instantes.sort()
+        ios = []
+        for instante in instantes:
+            ios.append((instante, random.choice(DISPOSITIVOS)))
 
-        processos.append(criar_pcb(pid, ppid, chegadas[i], tempo_cpu, ios))
+        processos.append(criar_processo(pid, ppid, chegadas[i], tempo_cpu, ios))
     return processos
 
 
-def ler_processos(caminho):
-    """Le processos de um arquivo texto.
+def ler_arquivo(caminho):
+    # formato de cada linha: PID PPID CHEGADA TEMPO_CPU [instante:DISPOSITIVO ...]
+    # o que vem depois de # e comentario
+    try:
+        arquivo = open(caminho, encoding="utf-8")
+        linhas = arquivo.readlines()
+        arquivo.close()
+    except OSError:
+        erro(f"não foi possível abrir o arquivo '{caminho}'")
 
-    Formato de cada linha (linhas com # sao comentarios):
-        PID PPID CHEGADA TEMPO_CPU [instante:DISPOSITIVO ...]
-    Exemplo:
-        3 1 2 7 3:FITA 5:DISCO
-    """
     processos = []
-    pids = set()
-    with open(caminho, encoding="utf-8") as arq:
-        for num_linha, linha in enumerate(arq, start=1):
-            linha = linha.split("#", 1)[0].strip()
-            if not linha:
-                continue
-            partes = linha.split()
-            if len(partes) < 4:
-                raise ValueError(f"linha {num_linha}: esperado PID PPID CHEGADA TEMPO_CPU")
-            pid, ppid, chegada, tempo_cpu = (int(x) for x in partes[:4])
-            if pid in pids:
-                raise ValueError(f"linha {num_linha}: PID {pid} repetido")
-            if tempo_cpu <= 0 or chegada < 0:
-                raise ValueError(f"linha {num_linha}: tempos devem ser positivos")
-            ios = []
-            for item in partes[4:]:
-                inst_txt, disp = item.split(":")
-                inst, disp = int(inst_txt), disp.upper()
-                if disp not in DISPOSITIVOS:
-                    raise ValueError(f"linha {num_linha}: dispositivo inválido '{disp}'")
-                if not 0 < inst < tempo_cpu:
-                    raise ValueError(
-                        f"linha {num_linha}: instante de I/O deve estar entre 1 e {tempo_cpu - 1}")
-                if any(inst == i for i, _ in ios):
-                    raise ValueError(f"linha {num_linha}: dois I/Os no mesmo instante {inst}")
-                ios.append((inst, disp))
-            pids.add(pid)
-            processos.append(criar_pcb(pid, ppid, chegada, tempo_cpu, ios))
-    if not processos:
-        raise ValueError("arquivo sem processos")
+    pids = []
+    num = 0
+    for linha in linhas:
+        num += 1
+        linha = linha.split("#")[0].strip()
+        if linha == "":
+            continue
+
+        partes = linha.split()
+        if len(partes) < 4:
+            erro(f"linha {num}: esperado PID PPID CHEGADA TEMPO_CPU")
+        try:
+            pid = int(partes[0])
+            ppid = int(partes[1])
+            chegada = int(partes[2])
+            tempo_cpu = int(partes[3])
+        except ValueError:
+            erro(f"linha {num}: PID, PPID, CHEGADA e TEMPO_CPU devem ser números inteiros")
+
+        if pid in pids:
+            erro(f"linha {num}: PID {pid} repetido")
+        if tempo_cpu <= 0 or chegada < 0:
+            erro(f"linha {num}: tempos devem ser positivos")
+
+        ios = []
+        instantes_usados = []
+        for item in partes[4:]:
+            if ":" not in item:
+                erro(f"linha {num}: I/O deve estar no formato instante:DISPOSITIVO")
+            instante, disp = item.split(":", 1)
+            disp = disp.upper()
+            try:
+                instante = int(instante)
+            except ValueError:
+                erro(f"linha {num}: instante de I/O inválido '{item}'")
+            if disp not in DISPOSITIVOS:
+                erro(f"linha {num}: dispositivo inválido '{disp}'")
+            if instante < 1 or instante >= tempo_cpu:
+                erro(f"linha {num}: instante de I/O deve estar entre 1 e {tempo_cpu - 1}")
+            if instante in instantes_usados:
+                erro(f"linha {num}: dois I/Os no mesmo instante {instante}")
+            instantes_usados.append(instante)
+            ios.append((instante, disp))
+
+        pids.append(pid)
+        processos.append(criar_processo(pid, ppid, chegada, tempo_cpu, ios))
+
+    if len(processos) == 0:
+        erro("o arquivo não tem nenhum processo")
     if len(processos) > MAX_PROCESSOS:
-        raise ValueError(f"máximo de {MAX_PROCESSOS} processos")
+        erro(f"máximo de {MAX_PROCESSOS} processos")
     return processos
 
 
-# ---------------------------------------------------------------------------
-# IMPRESSAO
-# ---------------------------------------------------------------------------
+# ---------- Impressao ----------
+
 def imprimir_tabela_inicial(processos):
     escrever("Processos (PCB inicial):")
     escrever(f"  {'PID':>3} {'PPID':>4} {'CHEGADA':>7} {'CPU':>4}  {'STATUS':<6} {'PRIOR.':<6} I/O (dispositivo@instante de CPU)")
     for p in processos:
         escrever(f"  {p['pid']:>3} {p['ppid']:>4} {p['chegada']:>7} {p['tempo_cpu']:>4}  "
-                 f"{p['status']:<6} {p['prioridade']:<6} {descrever_ios(p)}")
+                 f"{p['status']:<6} {p['prioridade']:<6} {texto_ios(p)}")
     escrever()
 
 
-def nomes(fila):
-    return "[" + ",".join(f"P{p['pid']}" for p in fila) + "]"
+def nomes(lista):
+    # [P1, P2] -> "P1,P2"
+    texto = ""
+    for p in lista:
+        if texto != "":
+            texto += ","
+        texto += "P" + str(p["pid"])
+    return texto
 
 
-def estado_filas(alta, baixa, dispositivos, executando):
-    cpu = f"P{executando['pid']}" if executando else "ociosa"
-    partes = [f"CPU={cpu}", f"ALTA={nomes(alta)}", f"BAIXA={nomes(baixa)}"]
+def estado_filas(alta, baixa, fila_io, atendendo, executando):
+    if executando is None:
+        cpu = "ociosa"
+    else:
+        cpu = "P" + str(executando["pid"])
+    texto = f"CPU={cpu}  ALTA=[{nomes(alta)}]  BAIXA=[{nomes(baixa)}]"
+
     for d in DISPOSITIVOS:
-        disp = dispositivos[d]
-        atual = f"P{disp['atual']['pid']}*" if disp["atual"] else ""
-        espera = ",".join(f"P{p['pid']}" for p in disp["fila"])
-        conteudo = ",".join(x for x in (atual, espera) if x)
-        partes.append(f"{d}=[{conteudo}]")
-    return "  ".join(partes)
+        # o * marca quem esta sendo atendido pelo dispositivo
+        conteudo = nomes(fila_io[d])
+        if atendendo[d] is not None:
+            atual = "P" + str(atendendo[d]["pid"]) + "*"
+            if conteudo == "":
+                conteudo = atual
+            else:
+                conteudo = atual + "," + conteudo
+        texto += f"  {d}=[{conteudo}]"
+    return texto
 
 
 def imprimir_gantt(linha_tempo):
-    """Desenha a linha do tempo da CPU (diagrama de Gantt em texto)."""
-    segmentos = []  # (inicio, fim, rotulo)
-    for t, pid in enumerate(linha_tempo):
-        rotulo = f"P{pid}" if pid is not None else "--"
-        if segmentos and segmentos[-1][2] == rotulo:
-            segmentos[-1][1] = t + 1
+    # junta as unidades seguidas do mesmo processo em blocos [inicio, fim, nome]
+    blocos = []
+    for t in range(len(linha_tempo)):
+        if linha_tempo[t] is None:
+            nome = "--"
         else:
-            segmentos.append([t, t + 1, rotulo])
+            nome = "P" + str(linha_tempo[t])
+        if len(blocos) > 0 and blocos[-1][2] == nome:
+            blocos[-1][1] = t + 1
+        else:
+            blocos.append([t, t + 1, nome])
 
     escrever("Linha do tempo da CPU (Gantt)  -- = CPU ociosa")
-    largura_max = 76
-    topo, base = "|", ""
-    for inicio, fim, rotulo in segmentos:
-        w = max(len(rotulo) + 2, len(str(inicio)) + 1, fim - inicio)
-        bloco_topo = rotulo.center(w) + "|"
-        bloco_base = str(inicio).ljust(w + 1)
-        if len(topo) + len(bloco_topo) > largura_max:
-            escrever(topo)
-            escrever(base + str(inicio))
+    linha_cima = "|"
+    linha_baixo = ""
+    for inicio, fim, nome in blocos:
+        largura = max(len(nome) + 2, len(str(inicio)) + 1, fim - inicio)
+        pedaco_cima = nome.center(largura) + "|"
+        pedaco_baixo = str(inicio).ljust(largura + 1)
+        # se a linha ficar muito comprida, imprime e comeca outra
+        if len(linha_cima) + len(pedaco_cima) > 76:
+            escrever(linha_cima)
+            escrever(linha_baixo + str(inicio))
             escrever()
-            topo, base = "|", ""
-        topo += bloco_topo
-        base += bloco_base
-    escrever(topo)
-    escrever(base + str(len(linha_tempo)))
+            linha_cima = "|"
+            linha_baixo = ""
+        linha_cima += pedaco_cima
+        linha_baixo += pedaco_baixo
+    escrever(linha_cima)
+    escrever(linha_baixo + str(len(linha_tempo)))
     escrever()
 
 
-# ---------------------------------------------------------------------------
-# SIMULACAO
-# ---------------------------------------------------------------------------
-def simular(processos, quantum, mostrar_filas=True):
-    n = len(processos)
-    alta = deque()
-    baixa = deque()
-    # cada dispositivo atende um processo por vez e tem sua propria fila
-    dispositivos = {d: {"fila": deque(), "atual": None, "restante": 0} for d in DISPOSITIVOS}
+# ---------- Simulacao ----------
 
-    novos = deque(sorted(processos, key=lambda p: (p["chegada"], p["pid"])))
+def simular(processos, quantum, mostrar_filas):
+    alta = []
+    baixa = []
+    # cada dispositivo tem sua fila e atende um processo por vez
+    fila_io = {"DISCO": [], "FITA": [], "IMPRESSORA": []}
+    atendendo = {"DISCO": None, "FITA": None, "IMPRESSORA": None}
+    tempo_io = {"DISCO": 0, "FITA": 0, "IMPRESSORA": 0}  # quanto falta para terminar
+
+    # processos que ainda nao chegaram, em ordem de chegada
+    novos = sorted(processos, key=lambda p: (p["chegada"], p["pid"]))
+
     executando = None
     quantum_usado = 0
     finalizados = 0
     t = 0
 
-    linha_tempo = []          # PID que usou a CPU em cada unidade de tempo
+    linha_tempo = []   # quem usou a CPU em cada instante (None = ociosa)
     cpu_ociosa = 0
-    trocas_contexto = 0
-    total_preempcoes = 0
-    eventos_io = {d: 0 for d in DISPOSITIVOS}
+    trocas = 0
+    preempcoes = 0
+    eventos_io = {"DISCO": 0, "FITA": 0, "IMPRESSORA": 0}
 
     while True:
-        houve_evento = False
+        teve_evento = False
 
-        # 1) Chegada de novos processos -> fila ALTA
-        while novos and novos[0]["chegada"] <= t:
-            p = novos.popleft()
-            p["status"] = PRONTO
+        # 1) processos que chegam agora vao para a fila ALTA
+        while len(novos) > 0 and novos[0]["chegada"] <= t:
+            p = novos.pop(0)
+            p["status"] = "PRONTO"
             p["prioridade"] = "ALTA"
             alta.append(p)
             log(t, f"P{p['pid']} criado (PPID={p['ppid']}, CPU={p['tempo_cpu']}, "
-                   f"I/O: {descrever_ios(p)}) -> fila ALTA")
-            houve_evento = True
+                   f"I/O: {texto_ios(p)}) -> fila ALTA")
+            teve_evento = True
 
-        # 2) Retorno de I/O concluido -> fila definida pelo dispositivo
+        # 2) quem terminou o I/O volta para a fila do dispositivo
         for d in DISPOSITIVOS:
-            disp = dispositivos[d]
-            if disp["atual"] is not None and disp["restante"] == 0:
-                p = disp["atual"]
-                disp["atual"] = None
-                destino = RETORNO_IO[d]
-                p["status"] = PRONTO
+            p = atendendo[d]
+            if p is not None and tempo_io[d] == 0:
+                atendendo[d] = None
+                destino = VOLTA_PARA[d]
+                p["status"] = "PRONTO"
                 p["prioridade"] = destino
-                (alta if destino == "ALTA" else baixa).append(p)
+                if destino == "ALTA":
+                    alta.append(p)
+                else:
+                    baixa.append(p)
                 log(t, f"P{p['pid']} retornou {ARTIGO[d]} {d} -> fila {destino}")
-                houve_evento = True
+                teve_evento = True
 
-        # 3) Verifica o processo que estava na CPU
+        # 3) ve o que acontece com o processo que esta na CPU
         if executando is not None:
             p = executando
             io = proximo_io(p)
             if p["restante"] == 0:
-                p["status"] = FINALIZADO
+                # terminou
+                p["status"] = "FINALIZADO"
                 p["fim"] = t
                 finalizados += 1
                 executando = None
                 log(t, f"P{p['pid']} FINALIZADO (turnaround = {p['fim'] - p['chegada']} u.t.)")
-                houve_evento = True
+                teve_evento = True
             elif io is not None and io[0] == p["executado"]:
+                # chegou a hora de pedir I/O
                 d = io[1]
                 p["prox_io"] += 1
-                p["status"] = BLOQUEADO
-                dispositivos[d]["fila"].append(p)
+                p["status"] = "BLOQUEADO"
+                fila_io[d].append(p)
                 eventos_io[d] += 1
                 executando = None
                 log(t, f"P{p['pid']} solicitou I/O {d} por {DURACAO_IO[d]} u.t. -> BLOQUEADO")
-                houve_evento = True
+                teve_evento = True
             elif quantum_usado == quantum:
-                p["status"] = PRONTO
+                # acabou o quantum: preempcao, vai para a fila BAIXA
+                p["status"] = "PRONTO"
                 p["prioridade"] = "BAIXA"
                 p["preempcoes"] += 1
-                total_preempcoes += 1
+                preempcoes += 1
                 baixa.append(p)
                 executando = None
                 log(t, f"P{p['pid']} sofreu preempção (fim do quantum, faltam {p['restante']}) -> fila BAIXA")
-                houve_evento = True
+                teve_evento = True
 
-        if finalizados == n:
-            if mostrar_filas and houve_evento:
-                escrever("         " + estado_filas(alta, baixa, dispositivos, executando))
+        if finalizados == len(processos):
+            if mostrar_filas and teve_evento:
+                escrever("         " + estado_filas(alta, baixa, fila_io, atendendo, executando))
             break
 
-        # 4) Dispositivos livres comecam a atender o proximo da sua fila
+        # 4) dispositivo livre comeca a atender o proximo da fila dele
         for d in DISPOSITIVOS:
-            disp = dispositivos[d]
-            if disp["atual"] is None and disp["fila"]:
-                p = disp["fila"].popleft()
-                disp["atual"] = p
-                disp["restante"] = DURACAO_IO[d]
+            if atendendo[d] is None and len(fila_io[d]) > 0:
+                p = fila_io[d].pop(0)
+                atendendo[d] = p
+                tempo_io[d] = DURACAO_IO[d]
                 log(t, f"{d} inicia atendimento de P{p['pid']} (termina em t={t + DURACAO_IO[d]})")
-                houve_evento = True
+                teve_evento = True
 
-        # 5) Escalonamento: fila ALTA tem preferencia sobre a BAIXA
+        # 5) se a CPU esta livre, escolhe o proximo: primeiro ALTA, depois BAIXA
         if executando is None:
-            origem = None
-            if alta:
-                executando, origem = alta.popleft(), "ALTA"
-            elif baixa:
-                executando, origem = baixa.popleft(), "BAIXA"
+            if len(alta) > 0:
+                executando = alta.pop(0)
+                origem = "ALTA"
+            elif len(baixa) > 0:
+                executando = baixa.pop(0)
+                origem = "BAIXA"
+
             if executando is not None:
                 p = executando
-                p["status"] = EXECUTANDO
+                p["status"] = "EXECUTANDO"
                 quantum_usado = 0
-                trocas_contexto += 1
+                trocas += 1
                 if p["inicio"] is None:
                     p["inicio"] = t
+
+                # calcula por quanto tempo ele deve rodar (so para mostrar no log)
                 fatia = min(quantum, p["restante"])
+                if fatia == quantum:
+                    motivo = "quantum"
+                else:
+                    motivo = "fim do processo"
                 io = proximo_io(p)
-                motivo = "quantum" if fatia == quantum else "fim do processo"
-                if io is not None and io[0] - p["executado"] < fatia:
-                    fatia, motivo = io[0] - p["executado"], f"pedido de I/O {io[1]}"
-                elif io is not None and io[0] - p["executado"] == fatia:
+                if io is not None and io[0] - p["executado"] <= fatia:
+                    fatia = io[0] - p["executado"]
                     motivo = f"pedido de I/O {io[1]}"
+
                 log(t, f"CPU executa P{p['pid']} (veio da fila {origem}, restante={p['restante']}) "
                        f"por até {fatia} u.t. [{motivo}]")
-                houve_evento = True
-            elif not linha_tempo or linha_tempo[-1] is not None:
+                teve_evento = True
+            elif len(linha_tempo) == 0 or linha_tempo[-1] is not None:
+                # so avisa no comeco do periodo ocioso
                 log(t, "CPU ociosa (nenhum processo pronto)")
-                houve_evento = True
+                teve_evento = True
 
-        if mostrar_filas and houve_evento:
-            escrever("         " + estado_filas(alta, baixa, dispositivos, executando))
+        if mostrar_filas and teve_evento:
+            escrever("         " + estado_filas(alta, baixa, fila_io, atendendo, executando))
 
-        # 6) Avanca uma unidade de tempo
+        # 6) passa uma unidade de tempo
         if executando is not None:
             executando["restante"] -= 1
             executando["executado"] += 1
@@ -361,24 +413,19 @@ def simular(processos, quantum, mostrar_filas=True):
         else:
             linha_tempo.append(None)
             cpu_ociosa += 1
-        for p in alta:
-            p["espera"] += 1
-        for p in baixa:
+        for p in alta + baixa:
             p["espera"] += 1
         for d in DISPOSITIVOS:
-            if dispositivos[d]["atual"] is not None:
-                dispositivos[d]["restante"] -= 1
-
+            if atendendo[d] is not None:
+                tempo_io[d] -= 1
         t += 1
-        if t > LIMITE_TEMPO:
-            raise RuntimeError("limite de tempo excedido - verifique os parametros")
 
     return {
         "tempo_total": t,
         "linha_tempo": linha_tempo,
         "cpu_ociosa": cpu_ociosa,
-        "trocas_contexto": trocas_contexto,
-        "preempcoes": total_preempcoes,
+        "trocas": trocas,
+        "preempcoes": preempcoes,
         "eventos_io": eventos_io,
     }
 
@@ -394,95 +441,125 @@ def imprimir_resumo(processos, quantum, r):
     escrever("Estatísticas por processo:")
     escrever(f"  {'PID':>3} {'PPID':>4} {'CHEG.':>5} {'CPU':>4} {'I/Os':>4} {'INÍCIO':>6} "
              f"{'FIM':>4} {'TURNAROUND':>10} {'ESPERA':>6} {'RESPOSTA':>8} {'PREEMP.':>7}  STATUS")
-    for p in sorted(processos, key=lambda x: x["pid"]):
+
+    soma_turnaround = 0
+    soma_espera = 0
+    soma_resposta = 0
+    qtd_finalizados = 0
+    for p in sorted(processos, key=lambda p: p["pid"]):
         turnaround = p["fim"] - p["chegada"]
         resposta = p["inicio"] - p["chegada"]
+        soma_turnaround += turnaround
+        soma_espera += p["espera"]
+        soma_resposta += resposta
+        if p["status"] == "FINALIZADO":
+            qtd_finalizados += 1
         escrever(f"  {p['pid']:>3} {p['ppid']:>4} {p['chegada']:>5} {p['tempo_cpu']:>4} "
                  f"{len(p['ios']):>4} {p['inicio']:>6} {p['fim']:>4} {turnaround:>10} "
                  f"{p['espera']:>6} {resposta:>8} {p['preempcoes']:>7}  {p['status']}")
     escrever()
 
     total = r["tempo_total"]
-    media_turn = sum(p["fim"] - p["chegada"] for p in processos) / n
-    media_espera = sum(p["espera"] for p in processos) / n
-    media_resp = sum(p["inicio"] - p["chegada"] for p in processos) / n
-    ociosa_pct = 100 * r["cpu_ociosa"] / total if total else 0
     io = r["eventos_io"]
+    total_io = io["DISCO"] + io["FITA"] + io["IMPRESSORA"]
+    ociosa_pct = 100 * r["cpu_ociosa"] / total
 
     escrever("Métricas gerais:")
-    escrever(f"  Processos finalizados ........ {sum(p['status'] == FINALIZADO for p in processos)}/{n}")
+    escrever(f"  Processos finalizados ........ {qtd_finalizados}/{n}")
     escrever(f"  Tempo total da simulação ..... {total} u.t.")
     escrever(f"  Quantum ...................... {quantum} u.t.")
-    escrever(f"  Trocas de contexto ........... {r['trocas_contexto']}")
+    escrever(f"  Trocas de contexto ........... {r['trocas']}")
     escrever(f"  Preempções (fim de quantum) .. {r['preempcoes']}")
     escrever(f"  Eventos de I/O ............... DISCO={io['DISCO']}  FITA={io['FITA']}  "
-             f"IMPRESSORA={io['IMPRESSORA']}  (total={sum(io.values())})")
-    escrever(f"  Tempo médio de espera ........ {media_espera:.2f} u.t.")
-    escrever(f"  Tempo médio de turnaround .... {media_turn:.2f} u.t.")
-    escrever(f"  Tempo médio de resposta ...... {media_resp:.2f} u.t.")
+             f"IMPRESSORA={io['IMPRESSORA']}  (total={total_io})")
+    escrever(f"  Tempo médio de espera ........ {soma_espera / n:.2f} u.t.")
+    escrever(f"  Tempo médio de turnaround .... {soma_turnaround / n:.2f} u.t.")
+    escrever(f"  Tempo médio de resposta ...... {soma_resposta / n:.2f} u.t.")
     escrever(f"  CPU ociosa ................... {r['cpu_ociosa']} u.t. ({ociosa_pct:.1f}%)")
     escrever()
-    escrever(f"[fim] Processos finalizados: {n}/{n} | tempo total: {total}")
+    escrever(f"[fim] Processos finalizados: {qtd_finalizados}/{n} | tempo total: {total}")
 
 
-# ---------------------------------------------------------------------------
-# PROGRAMA PRINCIPAL
-# ---------------------------------------------------------------------------
+# ---------- Programa principal ----------
+
+def ler_argumentos():
+    opcoes = {
+        "quantum": QUANTUM,
+        "processos": NUM_PROCESSOS,
+        "seed": SEED,
+        "entrada": None,
+        "saida": None,
+        "sem_filas": False,
+    }
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--help" or arg == "-h":
+            print(AJUDA)
+            sys.exit(0)
+        elif arg == "--sem-filas":
+            opcoes["sem_filas"] = True
+            i += 1
+        elif arg in ["--quantum", "--processos", "--seed", "--entrada", "--saida"]:
+            if i + 1 >= len(args):
+                erro(f"faltou o valor de {arg}")
+            nome = arg[2:]   # tira o "--"
+            valor = args[i + 1]
+            if nome in ["quantum", "processos", "seed"]:
+                try:
+                    valor = int(valor)
+                except ValueError:
+                    erro(f"{arg} precisa ser um número inteiro")
+            opcoes[nome] = valor
+            i += 2
+        else:
+            erro(f"opção desconhecida: {arg} (use --help)")
+
+    if opcoes["quantum"] < 1:
+        erro("o quantum deve ser >= 1")
+    if opcoes["processos"] < 1 or opcoes["processos"] > MAX_PROCESSOS:
+        erro(f"a quantidade de processos deve estar entre 1 e {MAX_PROCESSOS}")
+    return opcoes
+
+
 def main():
+    # para os acentos aparecerem certo no terminal
     try:
         sys.stdout.reconfigure(encoding="utf-8")
-    except (AttributeError, ValueError):
+    except Exception:
         pass
 
-    parser = argparse.ArgumentParser(
-        description="Simulador de escalonamento Round Robin com Feedback")
-    parser.add_argument("--quantum", type=int, default=QUANTUM_PADRAO,
-                        help=f"fatia de tempo (padrão: {QUANTUM_PADRAO})")
-    parser.add_argument("--processos", type=int, default=NUM_PROCESSOS_PADRAO,
-                        help=f"quantidade de processos aleatórios (padrão: {NUM_PROCESSOS_PADRAO}, "
-                             f"máx: {MAX_PROCESSOS})")
-    parser.add_argument("--seed", type=int, default=SEED_PADRAO,
-                        help=f"semente aleatória (padrão: {SEED_PADRAO})")
-    parser.add_argument("--entrada", help="arquivo com os processos (ex.: input/exemplo.txt)")
-    parser.add_argument("--saida", help="salva a saída também em arquivo (ex.: output/resultado.txt)")
-    parser.add_argument("--sem-filas", action="store_true",
-                        help="não imprime o estado das filas a cada evento")
-    args = parser.parse_args()
+    opcoes = ler_argumentos()
 
-    if args.quantum < 1:
-        parser.error("o quantum deve ser >= 1")
-    if not 1 <= args.processos <= MAX_PROCESSOS:
-        parser.error(f"a quantidade de processos deve estar entre 1 e {MAX_PROCESSOS}")
-
-    if args.entrada:
-        try:
-            processos = ler_processos(args.entrada)
-        except (OSError, ValueError) as erro:
-            parser.error(f"erro ao ler '{args.entrada}': {erro}")
-        origem = f"arquivo {args.entrada}"
+    if opcoes["entrada"] is not None:
+        processos = ler_arquivo(opcoes["entrada"])
+        origem = f"arquivo {opcoes['entrada']}"
     else:
-        rng = random.Random(args.seed)
-        processos = gerar_processos(args.processos, rng)
-        origem = f"aleatório (seed={args.seed})"
+        random.seed(opcoes["seed"])
+        processos = gerar_processos(opcoes["processos"])
+        origem = f"aleatório (seed={opcoes['seed']})"
 
     escrever("=" * 78)
     escrever("SIMULADOR DE ESCALONAMENTO - ROUND ROBIN COM FEEDBACK")
     escrever("=" * 78)
-    escrever(f"[config] quantum={args.quantum} | processos={len(processos)} | origem={origem}")
-    escrever(f"[config] I/O: " + "  ".join(
-        f"{d}={DURACAO_IO[d]} u.t. (volta p/ {RETORNO_IO[d]})" for d in DISPOSITIVOS))
+    escrever(f"[config] quantum={opcoes['quantum']} | processos={len(processos)} | origem={origem}")
+    config_io = []
+    for d in DISPOSITIVOS:
+        config_io.append(f"{d}={DURACAO_IO[d]} u.t. (volta p/ {VOLTA_PARA[d]})")
+    escrever("[config] I/O: " + "  ".join(config_io))
     escrever()
     imprimir_tabela_inicial(processos)
     escrever("Linha do tempo dos eventos:")
 
-    resultado = simular(processos, args.quantum, mostrar_filas=not args.sem_filas)
-    imprimir_resumo(processos, args.quantum, resultado)
+    resultado = simular(processos, opcoes["quantum"], not opcoes["sem_filas"])
+    imprimir_resumo(processos, opcoes["quantum"], resultado)
 
-    if args.saida:
-        with open(args.saida, "w", encoding="utf-8") as arq:
-            arq.write("\n".join(_linhas_saida) + "\n")
-        print(f"\nSaída salva em {args.saida}")
+    if opcoes["saida"] is not None:
+        arquivo = open(opcoes["saida"], "w", encoding="utf-8")
+        arquivo.write("\n".join(linhas_saida) + "\n")
+        arquivo.close()
+        print(f"\nSaída salva em {opcoes['saida']}")
 
 
-if __name__ == "__main__":
-    main()
+main()
