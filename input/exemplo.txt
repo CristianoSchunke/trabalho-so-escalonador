@@ -1,0 +1,13 @@
+# Exemplo de entrada para o simulador
+# Uso: python src/escalonador.py --entrada input/exemplo.txt
+#
+# Formato: PID PPID CHEGADA TEMPO_CPU [instante:DISPOSITIVO ...]
+#   instante    = unidades de CPU ja executadas quando o processo pede o I/O
+#   DISPOSITIVO = DISCO, FITA ou IMPRESSORA
+#
+# PID PPID CHEGADA CPU  I/O
+1     0    0       8    2:DISCO
+2     0    1       5
+3     1    2       7    3:FITA
+4     1    4       4    1:IMPRESSORA
+5     3    6       6    2:DISCO 4:FITA
