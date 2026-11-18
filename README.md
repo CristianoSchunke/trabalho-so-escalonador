@@ -12,7 +12,8 @@ alta e baixa prioridade e tratamento de I/O (disco, fita magnética e impressora
 Python 3 (testado com Python 3.12). Usa apenas a biblioteca padrão, sem dependências externas.
 
 Seguindo a restrição do trabalho, o simulador **não usa orientação a objetos**: o PCB é
-um dicionário, as filas são `collections.deque` (FIFO) e toda a lógica está em funções.
+um dicionário, as filas são listas comuns usadas como FIFO (`append` e `pop(0)`) e toda a
+lógica está em funções.
 
 ## Estrutura do repositório
 ```
@@ -108,9 +109,10 @@ docker run --rm -v "${PWD}/output:/app/output" so-escalonador --saida output/res
    - `P4 FINALIZADO (turnaround = 16 u.t.)` e `CPU ociosa`.
 
    Abaixo dos eventos, uma linha mostra o estado de todas as filas naquele instante, por exemplo:
-   `CPU=P3  ALTA=[P4]  BAIXA=[P1,P2]  DISCO=[]  FITA=[P5*]  IMPRESSORA=[]`
+   `CPU=P4  ALTA=[P5]  BAIXA=[P1,P2]  DISCO=[]  FITA=[P3*]  IMPRESSORA=[]`
    (o `*` marca o processo que está sendo atendido pelo dispositivo).
-4. **Resumo final**: diagrama de Gantt da CPU, tabela por processo (início, fim, turnaround,
+4. **Resumo final**: linha do tempo da CPU (Gantt) em intervalos, como `0-2 P1 | 2-5 P2 | 5-8 P3`
+   (`--` = CPU ociosa), tabela por processo (início, fim, turnaround,
    espera, resposta, preempções) e métricas gerais: tempo total, trocas de contexto, preempções,
    eventos de I/O por tipo, tempos médios de espera/turnaround/resposta e % de CPU ociosa.
 
