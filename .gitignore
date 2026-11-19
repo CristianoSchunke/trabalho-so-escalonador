@@ -3,4 +3,3 @@ __pycache__/
 output/*
 !output/.gitkeep
 docs/
-relatorio.pdf

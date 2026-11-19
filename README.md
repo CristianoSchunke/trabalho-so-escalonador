@@ -24,7 +24,9 @@ lógica está em funções.
 ├── output/                # saídas geradas com --saida (opcional)
 ├── Dockerfile             # bônus Docker
 ├── .dockerignore
-└── README.md
+├── README.md
+├── relatorio.pdf          # relatório do trabalho
+└── apresentacao.pptx      # slides da apresentação
 ```
 
 ## Premissas do escalonador
