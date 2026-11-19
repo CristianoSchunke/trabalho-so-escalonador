@@ -76,7 +76,7 @@ python src/escalonador.py --help
 docker build -t so-escalonador .
 
 # Executar o simulador
-docker run --rm so-escalonador
+docker run --name so-escalonador-container so-escalonador
 
 # Passando opções (tudo depois do nome da imagem vai para o simulador)
 docker run --rm so-escalonador --entrada input/exemplo.txt --quantum 4
